@@ -1,15 +1,15 @@
 /*******************************************************************************
  * Copyright (c) 2013-2015 Sierra Wireless and others.
- * 
+ *
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v2.0
  * and Eclipse Distribution License v1.0 which accompany this distribution.
- * 
+ *
  * The Eclipse Public License is available at
  *    http://www.eclipse.org/legal/epl-v20.html
  * and the Eclipse Distribution License is available at
  *    http://www.eclipse.org/org/documents/edl-v10.html.
- * 
+ *
  * Contributors:
  *     Sierra Wireless - initial API and implementation
  *     Bosch Software Innovations - added Redis URL support with authentication
@@ -17,17 +17,10 @@
  *******************************************************************************/
 package org.eclipse.leshan.server.demo;
 
-import java.io.File;
-import java.io.PrintWriter;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.security.cert.Certificate;
-import java.security.cert.X509Certificate;
-import java.util.List;
-
-import javax.jmdns.JmDNS;
-import javax.jmdns.ServiceInfo;
-
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 import org.eclipse.californium.core.config.CoapConfig;
 import org.eclipse.californium.elements.config.Configuration;
 import org.eclipse.californium.elements.util.CertPathUtil;
@@ -39,8 +32,15 @@ import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jetty.webapp.WebAppContext;
 import org.eclipse.leshan.core.demo.LwM2mDemoConstant;
 import org.eclipse.leshan.core.demo.cli.ShortErrorMessageHandler;
+import org.eclipse.leshan.core.link.Link;
 import org.eclipse.leshan.core.model.ObjectLoader;
 import org.eclipse.leshan.core.model.ObjectModel;
+import org.eclipse.leshan.core.node.LwM2mNode;
+import org.eclipse.leshan.core.observation.Observation;
+import org.eclipse.leshan.core.request.ContentFormat;
+import org.eclipse.leshan.core.request.ObserveRequest;
+import org.eclipse.leshan.core.response.LwM2mResponse;
+import org.eclipse.leshan.core.response.ObserveResponse;
 import org.eclipse.leshan.server.californium.LeshanServer;
 import org.eclipse.leshan.server.californium.LeshanServerBuilder;
 import org.eclipse.leshan.server.core.demo.json.servlet.SecurityServlet;
@@ -49,18 +49,43 @@ import org.eclipse.leshan.server.demo.servlet.ClientServlet;
 import org.eclipse.leshan.server.demo.servlet.EventServlet;
 import org.eclipse.leshan.server.demo.servlet.ObjectSpecServlet;
 import org.eclipse.leshan.server.demo.servlet.ServerServlet;
+import org.eclipse.leshan.server.demo.servlet.json.JacksonLinkSerializer;
+import org.eclipse.leshan.server.demo.servlet.json.JacksonLwM2mNodeDeserializer;
+import org.eclipse.leshan.server.demo.servlet.json.JacksonLwM2mNodeSerializer;
+import org.eclipse.leshan.server.demo.servlet.json.JacksonRegistrationSerializer;
+import org.eclipse.leshan.server.demo.servlet.json.JacksonResponseSerializer;
 import org.eclipse.leshan.server.model.LwM2mModelProvider;
 import org.eclipse.leshan.server.model.VersionedModelProvider;
 import org.eclipse.leshan.server.redis.RedisRegistrationStore;
 import org.eclipse.leshan.server.redis.RedisSecurityStore;
+import org.eclipse.leshan.server.registration.Registration;
+import org.eclipse.leshan.server.registration.RegistrationListener;
+import org.eclipse.leshan.server.registration.RegistrationUpdate;
 import org.eclipse.leshan.server.security.EditableSecurityStore;
 import org.eclipse.leshan.server.security.FileSecurityStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import picocli.CommandLine;
 
+import javax.jmdns.JmDNS;
+import javax.jmdns.ServiceInfo;
+import java.io.File;
+import java.io.PrintWriter;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.util.Collection;
+import java.util.List;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.stream.StreamSupport;
+
 public class LeshanServerDemo {
+
+    private static final Logger LOG = LoggerFactory.getLogger(LeshanServerDemo.class);
+    private static final String CF_CONFIGURATION_FILENAME = "Californium3.server.properties";
+    private static final String CF_CONFIGURATION_HEADER = "Leshan Server Demo - " + Configuration.DEFAULT_HEADER;
 
     static {
         // Define a default logback.configurationFile
@@ -69,10 +94,6 @@ public class LeshanServerDemo {
             System.setProperty("logback.configurationFile", "logback-config.xml");
         }
     }
-
-    private static final Logger LOG = LoggerFactory.getLogger(LeshanServerDemo.class);
-    private static final String CF_CONFIGURATION_FILENAME = "Californium3.server.properties";
-    private static final String CF_CONFIGURATION_HEADER = "Leshan Server Demo - " + Configuration.DEFAULT_HEADER;
 
     public static void main(String[] args) {
 
@@ -90,6 +111,54 @@ public class LeshanServerDemo {
         try {
             // Create LWM2M Server
             LeshanServer lwm2mServer = createLeshanServer(cli);
+
+            lwm2mServer.getRegistrationService().addListener(new RegistrationListener() {
+                @Override
+                public void registered(Registration registration, Registration previousReg, Collection<Observation> previousObsersations) {
+                    System.out.printf("new device was registered, id: %s", registration.getEndpoint());
+                }
+
+                @Override
+                public void updated(RegistrationUpdate update, Registration updatedReg, Registration previousReg) {
+                    System.out.printf("device was updated, id: %s", updatedReg.getEndpoint());
+                }
+
+                @Override
+                public void unregistered(Registration registration, Collection<Observation> observations, boolean expired, Registration newReg) {
+                    System.out.printf("device was deregistered, id: %s", registration.getEndpoint());
+                }
+            });
+
+            new Thread(() -> {
+                while (true) {
+                    try {
+                        Thread.sleep(5000);
+                        StreamSupport.stream(
+                                Spliterators.spliteratorUnknownSize(lwm2mServer.getRegistrationService().getAllRegistrations(), Spliterator.ORDERED),
+                                false
+                        ).forEach(registration -> {
+                            try {
+
+                                String contentFormatParam = "TLV";
+                                String target = "/3/0/2";
+                                ContentFormat contentFormat = contentFormatParam != null
+                                        ? ContentFormat.fromName(contentFormatParam.toUpperCase())
+                                        : null;
+                                ObserveRequest request = new ObserveRequest(contentFormat, target);
+
+                                lwm2mServer.send(registration, request);
+
+                                ObserveResponse cResponse = lwm2mServer.send(registration, request);
+                                processDeviceResponse(cResponse, lwm2mServer);
+                            } catch (InterruptedException e) {
+                                e.printStackTrace();
+                            }
+                        });
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }).start();
 
             // Create Web Server
             Server webServer = createJettyServer(cli, lwm2mServer);
@@ -128,6 +197,30 @@ public class LeshanServerDemo {
             printer.print(command.getColorScheme().stackTraceText(e));
             printer.flush();
             System.exit(1);
+        }
+    }
+
+    private static void processDeviceResponse(LwM2mResponse cResponse, LeshanServer lwm2mServer) {
+        if (cResponse == null) {
+            LOG.warn(String.format("Request %s%s timed out."));
+        } else {
+            String response = null;
+            try {
+                ObjectMapper mapper = new ObjectMapper();
+                mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+                SimpleModule module = new SimpleModule();
+                module.addSerializer(Link.class, new JacksonLinkSerializer());
+                module.addSerializer(Registration.class, new JacksonRegistrationSerializer(lwm2mServer.getPresenceService()));
+                module.addSerializer(LwM2mResponse.class, new JacksonResponseSerializer());
+                module.addSerializer(LwM2mNode.class, new JacksonLwM2mNodeSerializer());
+                module.addDeserializer(LwM2mNode.class, new JacksonLwM2mNodeDeserializer());
+                mapper.registerModule(module);
+
+                response = mapper.writeValueAsString(cResponse);
+            } catch (JsonProcessingException e) {
+                e.printStackTrace();
+            }
+            LOG.info("response for /3/0/2 command received: " + response);
         }
     }
 
