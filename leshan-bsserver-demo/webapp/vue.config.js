@@ -10,8 +10,8 @@ module.exports = {
   devServer: {
     proxy: {
       "/api": {
-        // 8080 is the default port for leshan-server-demo if you change it in development phase you need to change this value too.
-        target: "http://localhost:8080",
+        // 8081 is the default port for leshan-server-demo if you change it in development phase you need to change this value too.
+        target: "http://localhost:8081",
         ws: true,
         changeOrigin: true,
       },

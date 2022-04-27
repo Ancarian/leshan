@@ -89,7 +89,6 @@ public class LeshanBootstrapServerDemo {
 
             // Create Web Server
             Server webServer = createJettyServer(cli, lwm2mBsServer, bsConfigStore, securityStore);
-
             // Start servers
             lwm2mBsServer.start();
             webServer.start();

@@ -84,6 +84,7 @@ public class LeshanBootstrapServer {
         this.coapApi = new CoapAPI();
 
         // init CoAP server
+
         coapServer = createCoapServer(coapConfig);
         this.unsecuredEndpoint = unsecuredEndpoint;
         if (unsecuredEndpoint != null)
@@ -129,6 +130,7 @@ public class LeshanBootstrapServer {
         if (requestSender instanceof Startable) {
             ((Startable) requestSender).start();
         }
+
         coapServer.start();
 
         if (LOG.isInfoEnabled()) {
